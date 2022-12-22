@@ -1,0 +1,15 @@
+{
+    "frag": true,
+    "Player1": {
+        "name": "none",
+        "hand": 0
+    },
+    "Player2": {
+        "name": "none",
+        "hand": 0
+    },
+    "Player3": {
+        "name": "none",
+        "hand": 0
+    }
+}
