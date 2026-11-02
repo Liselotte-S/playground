@@ -21,6 +21,17 @@
     Windows 機能・電源設定をスキップ
 .PARAMETER NoPause
     終了時に Enter 待ちをしない
+.PARAMETER Elevated
+    （内部用）昇格前のプロセスがユーザー側の UI 設定を済ませた後に、管理者側として起動されたことを示す
+.PARAMETER ResultPath
+    （内部用）管理者側の結果を書き出す JSON ファイル
+
+.NOTES
+    実行の流れ（Setup.bat をダブルクリックした場合）
+      1. 通常権限のまま、ログオン中のユーザーに UI 設定(HKCU)を適用し、エクスプローラーを再起動
+      2. 管理者権限に昇格して、ソフト / Windows 機能 / マシン全体のポリシーを設定
+      3. 両方の結果をまとめて表示
+    標準ユーザーが別の管理者アカウントで昇格しても、UI 設定は 1 でログオン中のユーザーに入る。
 
 .EXAMPLE
     Setup.bat をダブルクリック（管理者権限への昇格は自動）
@@ -32,7 +43,9 @@ param(
     [switch]$SkipApps,
     [switch]$SkipUI,
     [switch]$SkipSystem,
-    [switch]$NoPause
+    [switch]$NoPause,
+    [switch]$Elevated,
+    [string]$ResultPath
 )
 
 # ============================================================================
@@ -180,52 +193,89 @@ function New-Shortcut([string]$LinkPath, [string]$Target) {
     $lnk.WorkingDirectory = Split-Path $Target
     $lnk.Save()
 }
-#endregion
+function Expand-ZipFile([string]$ZipPath, [string]$Dest) {
+    # PS 5.1 の Expand-Archive は Shift_JIS のファイル名が化けるため、.NET で cp932 を指定して展開する
+    # （UTF-8 フラグ付きのエントリは自動的に UTF-8 として読まれる）
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $destRoot = [IO.Path]::GetFullPath($Dest).TrimEnd('\') + '\'
+    $zip = [IO.Compression.ZipFile]::Open($ZipPath, 'Read', [Text.Encoding]::GetEncoding(932))
+    try {
+        foreach ($entry in $zip.Entries) {
+            $target = [IO.Path]::GetFullPath((Join-Path $destRoot $entry.FullName))
+            if (-not $target.StartsWith($destRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "zip 内に展開先の外を指すパスがあります: $($entry.FullName)"
+            }
+            if ($entry.Name -eq '') { New-Item -ItemType Directory -Path $target -Force | Out-Null; continue }
+            New-Item -ItemType Directory -Path (Split-Path $target) -Force | Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+        }
+    } finally { $zip.Dispose() }
+}
+function Get-UncPath([string]$Path) {
+    # ネットワークドライブ(Z: など)は昇格後のプロセスから見えないので、\\server\share 形式に変換する
+    try {
+        $qualifier = Split-Path $Path -Qualifier
+        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$qualifier'"
+        if ($disk.DriveType -eq 4 -and $disk.ProviderName) {
+            return $disk.ProviderName + $Path.Substring($qualifier.Length)
+        }
+    } catch { }
+    return $Path
+}
+function Restart-Explorer {
+    Write-Section 'エクスプローラーを再起動して UI 設定を反映'
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+    # 通常は Winlogon が自動で再起動する（AutoRestartShell）ので、それを待つ
+    for ($i = 0; $i -lt 10 -and -not (Get-Process -Name explorer -ErrorAction SilentlyContinue); $i++) {
+        Start-Sleep -Seconds 1
+    }
+    if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) {
+        if ($script:IsAdmin) {
+            # 管理者のまま起動するとシェル全体が管理者権限になるため、権限を落として起動する
+            & runas.exe /trustlevel:0x20000 "$env:WINDIR\explorer.exe"
+        } else {
+            Start-Process "$env:WINDIR\explorer.exe"
+        }
+    }
+}
+function Show-Summary {
+    Write-Section '結果'
+    $script:Results | Format-Table -AutoSize -Wrap | Out-String -Width 200 | Write-Host
 
-#region ---- 管理者権限チェック（自動昇格） -----------------------------------
-$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host '管理者権限で再起動します...' -ForegroundColor Yellow
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-    foreach ($k in $PSBoundParameters.Keys) { $argList += "-$k" }
-    Start-Process powershell.exe -Verb RunAs -ArgumentList $argList
-    exit
+    $ng   = @($script:Results | Where-Object { $_.Result -eq 'NG' }).Count
+    $warn = @($script:Results | Where-Object { $_.Result -eq 'WARN' }).Count
+    Write-Host "NG: $ng 件 / WARN: $warn 件" -ForegroundColor $(if ($ng) { 'Red' } elseif ($warn) { 'Yellow' } else { 'Green' })
+    Write-Host ''
+    Write-Host '手動で行うこと:' -ForegroundColor Yellow
+    Write-Host '  - Wireshark でキャプチャするには Npcap が必要（https://npcap.com/ から手動インストール）'
+    Write-Host '  - 一部の設定(ウィジェット無効・秒表示など)はサインアウト/再起動後に反映'
+    if ($script:RebootRequired -or -not $SkipSystem) {
+        Write-Host '  - 再起動してください（Windows 機能・Horizon Client などの反映のため）' -ForegroundColor Yellow
+    }
 }
 #endregion
 
 #region ---- ログ ---------------------------------------------------------------
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$script:IsAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
 $logDir = Join-Path $PSScriptRoot 'logs'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
-$logFile = Join-Path $logDir ("setup_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+$logFile = Join-Path $logDir ("setup_{0:yyyyMMdd_HHmmss}_{1}.log" -f (Get-Date), $(if ($script:IsAdmin) { 'admin' } else { 'user' }))
 Start-Transcript -Path $logFile | Out-Null
 
 $os = Get-CimInstance Win32_OperatingSystem
 Write-Host "OS      : $($os.Caption) (Build $($os.BuildNumber))"
-Write-Host "ユーザー: $env:USERDOMAIN\$env:USERNAME"
+Write-Host "ユーザー: $env:USERDOMAIN\$env:USERNAME（管理者権限: $script:IsAdmin）"
 Write-Host "ログ    : $logFile"
-#endregion
-
-#region ---- HKCU の対象ユーザー確認 ----------------------------------------
-# 別の管理者アカウントで昇格した場合、HKCU はその管理者のものになるため UI 設定を止める
-if (-not $SkipUI) {
-    try {
-        $owner = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" |
-                 Select-Object -First 1 | Invoke-CimMethod -MethodName GetOwner
-        if ($owner -and $owner.User -and ($owner.User -ne $env:USERNAME)) {
-            Write-Warning "ログオン中のユーザー($($owner.User))と実行ユーザー($env:USERNAME)が異なります。"
-            Write-Warning 'UI 設定は実行ユーザー側に適用されてしまうため、スキップします。'
-            Write-Warning '→ ログオン中のユーザーで -SkipApps -SkipSystem を付けて再実行してください（要管理者）。'
-            $SkipUI = $true
-            Add-Result 'UI/設定' 'UI 設定全体' 'SKIP' '実行ユーザー不一致'
-        }
-    } catch { }
-}
 #endregion
 
 # ============================================================================
 #  1. UI を Windows 10 風に
+#     ユーザー側(HKCU)は管理者権限なしで書けるので、昇格前にログオン中のユーザーで適用する。
+#     HKCU\Software\Policies は管理者しか書けないため、ポリシー系はマシン全体(HKLM)に入れる。
 # ============================================================================
-if (-not $SkipUI) {
+function Invoke-UserUI {
     Write-Section '1. UI を Windows 10 風に変更'
 
     $adv    = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
@@ -246,8 +296,7 @@ if (-not $SkipUI) {
         Set-Reg $adv 'MMTaskbarGlomLevel' ([int]$UI.TaskbarCombine) -Label "タスクバー結合(マルチモニター)=$($UI.TaskbarCombine)"
     }
     if ($UI.HideWidgets) {
-        # 24H2 以降は TaskbarDa を直接書けない(UCPD で保護)ことがあるので、ポリシーでも無効化
-        Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0 -Label 'ウィジェット無効(ポリシー)'
+        # 24H2 以降は TaskbarDa を直接書けない(UCPD で保護)ことがあるので、Invoke-MachineUI でポリシーでも無効化
         try {
             Set-ItemProperty -Path $adv -Name 'TaskbarDa' -Value 0 -Type DWord -Force
             Add-Result 'UI/設定' 'ウィジェットボタン非表示' 'OK'
@@ -258,9 +307,6 @@ if (-not $SkipUI) {
     if ($UI.ShowClockSeconds) { Set-Reg $adv 'ShowSecondsInSystemClock' 1 -Label '時計に秒を表示' }
 
     # ---- スタート / 検索 ----
-    if ($UI.DisableWebSearch) {
-        Set-Reg 'HKCU:\Software\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions' 1 -Label 'スタート検索の Web 結果無効'
-    }
     if ($UI.DisableStartRecommend) {
         Set-Reg $adv 'Start_IrisRecommendations' 0 -Label 'スタートのおすすめ(ヒント)非表示'
     }
@@ -282,6 +328,77 @@ if (-not $SkipUI) {
         Set-Reg 'HKCU:\Software\Classes\CLSID\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}' 'System.IsPinnedToNameSpaceTree' 0 -Label 'ギャラリー非表示'
     }
 }
+
+function Invoke-MachineUI {
+    # 管理者権限が必要なもの（マシン全体のポリシー）
+    if ($UI.HideWidgets) {
+        Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0 -Label 'ウィジェット無効(ポリシー)'
+    }
+    if ($UI.DisableWebSearch) {
+        Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions' 1 -Label 'スタート検索の Web 結果無効(ポリシー)'
+    }
+}
+
+# ============================================================================
+#  通常権限で起動された場合: ユーザー側の UI 設定 → 管理者側を起動して待つ → 結果をまとめて表示
+# ============================================================================
+if (-not $script:IsAdmin) {
+    if (-not $SkipUI) {
+        Invoke-UserUI
+        Restart-Explorer
+    }
+
+    # マシン全体の UI ポリシー / ソフト / システムが残っていれば管理者側を起動
+    if (-not ($SkipUI -and $SkipApps -and $SkipSystem)) {
+        Write-Section '管理者権限で残りの処理を実行します（UAC で「はい」を選んでください）'
+        $resultFile = Join-Path (Get-UncPath $logDir) ("result_{0:yyyyMMdd_HHmmss}.json" -f (Get-Date))
+        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Get-UncPath $PSCommandPath)`"",
+                     '-Elevated', '-NoPause', '-ResultPath', "`"$resultFile`"")
+        foreach ($k in 'SkipApps', 'SkipUI', 'SkipSystem') {
+            if ($PSBoundParameters.ContainsKey($k)) { $argList += "-$k" }
+        }
+        try {
+            Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait
+            if (Test-Path $resultFile) {
+                $r = Get-Content $resultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                foreach ($x in @($r.Results)) { $script:Results.Add($x) }
+                if ($r.RebootRequired) { $script:RebootRequired = $true }
+                Remove-Item $resultFile -Force
+            } else {
+                Add-Result '管理者' '管理者側の処理' 'NG' '途中で終了しました（logs の *_admin.log を確認）'
+            }
+        } catch {
+            Add-Result '管理者' '管理者権限への昇格' 'NG' "UAC が拒否されたか失敗しました: $($_.Exception.Message)"
+        }
+    }
+
+    Show-Summary
+    Stop-Transcript | Out-Null
+    if (-not $NoPause) { Read-Host "`nEnter キーで終了" | Out-Null }
+    exit
+}
+
+# ============================================================================
+#  ここから管理者権限
+# ============================================================================
+# 昇格前にユーザー側の UI を済ませていない場合（管理者のコンソールから直接実行した場合）だけ HKCU を設定する
+$doUserUI = (-not $SkipUI) -and (-not $Elevated)
+if ($doUserUI) {
+    # 別の管理者アカウントで実行している場合、HKCU はその管理者のものになるため止める
+    try {
+        $owner = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" |
+                 Select-Object -First 1 | Invoke-CimMethod -MethodName GetOwner
+        if ($owner -and $owner.User -and ($owner.User -ne $env:USERNAME)) {
+            Write-Warning "ログオン中のユーザー($($owner.User))と実行ユーザー($env:USERNAME)が異なります。"
+            Write-Warning 'UI 設定は実行ユーザー側に適用されてしまうため、スキップします。'
+            Write-Warning '→ ログオン中のユーザーで Setup.bat をダブルクリックすれば、UI 設定は昇格前にそのユーザーへ適用されます。'
+            $doUserUI = $false
+            Add-Result 'UI/設定' 'ユーザー側の UI 設定' 'SKIP' '実行ユーザー不一致'
+        }
+    } catch { }
+}
+if ($doUserUI)      { Invoke-UserUI }
+if (-not $SkipUI)   { Invoke-MachineUI }
 
 # ============================================================================
 #  2. ソフトのインストール
@@ -351,7 +468,7 @@ if (-not $SkipApps) {
             $exePath = $null
             if ($file.Extension -eq '.zip') {
                 if (-not (Test-Path $app.Dest)) { New-Item -ItemType Directory -Path $app.Dest -Force | Out-Null }
-                Expand-Archive -Path $file.FullName -DestinationPath $app.Dest -Force
+                Expand-ZipFile $file.FullName $app.Dest
                 $exePath = Get-ChildItem -Path $app.Dest -Recurse -Filter $app.Exe -File | Select-Object -First 1
                 if (-not $exePath) {
                     $exePath = Get-ChildItem -Path $app.Dest -Recurse -Filter '*.exe' -File |
@@ -361,7 +478,8 @@ if (-not $SkipApps) {
                     $smDir = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Tools'
                     New-Shortcut (Join-Path $smDir "$($app.Name).lnk") $exePath.FullName
                     if ($app.Startup) {
-                        New-Shortcut (Join-Path ([Environment]::GetFolderPath('Startup')) "$($app.Name).lnk") $exePath.FullName
+                        # 別の管理者アカウントで昇格していても効くよう、全ユーザー共通のスタートアップに置く
+                        New-Shortcut (Join-Path ([Environment]::GetFolderPath('CommonStartup')) "$($app.Name).lnk") $exePath.FullName
                     }
                     Add-Result 'アプリ' $app.Name 'OK' "$($exePath.FullName)"
                 } else {
@@ -441,26 +559,15 @@ if (-not $SkipSystem) {
 # ============================================================================
 #  後処理
 # ============================================================================
-if (-not $SkipUI) {
-    Write-Section 'エクスプローラーを再起動して UI 設定を反映'
-    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3
-    if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }
+if ($doUserUI) { Restart-Explorer }
+
+if ($ResultPath) {
+    # 昇格前のプロセスに結果を渡す（結果の表はそちらでまとめて表示）
+    # PS 5.1 では @(List) をそのまま渡すと "Argument types do not match" になるため ToArray() する
+    $json = ConvertTo-Json -InputObject @{ Results = $script:Results.ToArray(); RebootRequired = $script:RebootRequired } -Depth 3
+    [IO.File]::WriteAllText($ResultPath, $json, (New-Object Text.UTF8Encoding $false))
 }
 
-Write-Section '結果'
-$script:Results | Format-Table -AutoSize -Wrap | Out-String -Width 200 | Write-Host
-
-$ng   = @($script:Results | Where-Object { $_.Result -eq 'NG' }).Count
-$warn = @($script:Results | Where-Object { $_.Result -eq 'WARN' }).Count
-Write-Host "NG: $ng 件 / WARN: $warn 件" -ForegroundColor $(if ($ng) { 'Red' } elseif ($warn) { 'Yellow' } else { 'Green' })
-Write-Host ''
-Write-Host '手動で行うこと:' -ForegroundColor Yellow
-Write-Host '  - Wireshark でキャプチャするには Npcap が必要（https://npcap.com/ から手動インストール）'
-Write-Host '  - 一部の設定(ウィジェット無効・秒表示など)はサインアウト/再起動後に反映'
-if ($script:RebootRequired -or -not $SkipSystem) {
-    Write-Host '  - 再起動してください（Windows 機能・Horizon Client などの反映のため）' -ForegroundColor Yellow
-}
-
+Show-Summary
 Stop-Transcript | Out-Null
 if (-not $NoPause) { Read-Host "`nEnter キーで終了" | Out-Null }
