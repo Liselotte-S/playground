@@ -240,7 +240,14 @@ function Restart-Explorer {
 }
 function Show-Summary {
     Write-Section '結果'
-    $script:Results | Format-Table -AutoSize -Wrap | Out-String -Width 200 | Write-Host
+    # Format-Table は全角文字の幅を数え違えて列が崩れるため、実行中と同じ形式で 1 行ずつ出す
+    foreach ($r in $script:Results) {
+        $color = switch ($r.Result) { 'OK' { 'Green' } 'SKIP' { 'DarkGray' } 'WARN' { 'Yellow' } default { 'Red' } }
+        $msg = "  [{0}] {1} / {2}" -f $r.Result, $r.Category, $r.Item
+        if ($r.Note) { $msg += "  ($($r.Note))" }
+        Write-Host $msg -ForegroundColor $color
+    }
+    Write-Host ''
 
     $ng   = @($script:Results | Where-Object { $_.Result -eq 'NG' }).Count
     $warn = @($script:Results | Where-Object { $_.Result -eq 'WARN' }).Count
@@ -368,7 +375,7 @@ if (-not $script:IsAdmin) {
                 Add-Result '管理者' '管理者側の処理' 'NG' '途中で終了しました（logs の *_admin.log を確認）'
             }
         } catch {
-            Add-Result '管理者' '管理者権限への昇格' 'NG' "UAC が拒否されたか失敗しました: $($_.Exception.Message)"
+            Add-Result '管理者' '管理者権限への昇格' 'NG' "UAC が拒否されたか失敗しました: $($_.Exception.Message.TrimEnd('。'))"
         }
     }
 
@@ -435,8 +442,14 @@ if (-not $SkipApps) {
             if ($app.Override) { $wingetArgs += @('--override', $app.Override) }
             else               { $wingetArgs += '--silent' }
 
-            & winget.exe @wingetArgs
+            # 既定だとユーザー単位のインストーラーが選ばれるパッケージ(WinMerge / WinSCP など)があり、
+            # 別の管理者アカウントで昇格するとその管理者のプロファイルに入ってしまうため、全ユーザー向けを優先する
+            & winget.exe @wingetArgs --scope machine
             $code = $LASTEXITCODE
+            if ($code -eq -1978335216) {   # 0x8A150010 全ユーザー向けのインストーラーが無い → 既定の範囲で入れ直す
+                & winget.exe @wingetArgs
+                $code = $LASTEXITCODE
+            }
             switch ($code) {
                 0           { Add-Result 'アプリ' $app.Name 'OK' }
                 -1978335189 { Add-Result 'アプリ' $app.Name 'SKIP' 'インストール済み(更新なし)' }     # 0x8A15002B
