@@ -5,8 +5,8 @@
 
 .DESCRIPTION
     1. Windows 11 の UI を Windows 10 風に変更（タスクバー / エクスプローラー / 右クリックメニュー）
-    2. winget でソフトを一括インストール
-       サクラエディタ / Tera Term / WinMerge / Omnissa Horizon Client / Python ほか
+    2. winget でソフトを一括インストールし、デスクトップにショートカットを作成
+       サクラエディタ / Tera Term / WinMerge / Omnissa Horizon Client / Webex / Python ほか
     3. winget に無いソフト（WinShot / ExPing）を installers フォルダから展開・配置
     4. Python のネットワーク系ライブラリを pip でインストール
     5. Windows 機能（Telnet / TFTP クライアント）の有効化、電源設定
@@ -25,6 +25,8 @@
     （内部用）昇格前のプロセスがユーザー側の UI 設定を済ませた後に、管理者側として起動されたことを示す
 .PARAMETER ResultPath
     （内部用）管理者側の結果を書き出す JSON ファイル
+.PARAMETER UserDesktop
+    （内部用）ログオン中のユーザーのデスクトップ（ショートカットの重複チェック用）
 
 .NOTES
     実行の流れ（Setup.bat をダブルクリックした場合）
@@ -45,7 +47,8 @@ param(
     [switch]$SkipSystem,
     [switch]$NoPause,
     [switch]$Elevated,
-    [string]$ResultPath
+    [string]$ResultPath,
+    [string]$UserDesktop
 )
 
 # ============================================================================
@@ -54,33 +57,55 @@ param(
 
 # --- winget でインストールするソフト ----------------------------------------
 #   Enabled = $false にすると入れない。Id は `winget search <名前>` で確認できる。
+#   Desktop = スタートメニューから探してデスクトップにコピーするショートカット名（ワイルドカード可、先に書いたものを優先）
+#             @() にするとデスクトップにアイコンを作らない
 $WingetApps = @(
     # ---- 必須 ----
-    @{ Enabled = $true;  Name = 'サクラエディタ';         Id = 'sakura-editor.sakura' }
-    @{ Enabled = $true;  Name = 'Tera Term 5';            Id = 'TeraTermProject.teraterm5' }
-    @{ Enabled = $true;  Name = 'WinMerge';               Id = 'WinMerge.WinMerge' }
-    @{ Enabled = $true;  Name = 'Omnissa Horizon Client'; Id = 'Omnissa.HorizonClient' }
+    @{ Enabled = $true;  Name = 'サクラエディタ';         Id = 'sakura-editor.sakura'
+       Desktop = @('サクラエディタ*', 'SAKURA*') }
+    @{ Enabled = $true;  Name = 'Tera Term 5';            Id = 'TeraTermProject.teraterm5'
+       Desktop = @('Tera Term 5*', 'Tera Term*') }
+    @{ Enabled = $true;  Name = 'WinMerge';               Id = 'WinMerge.WinMerge'
+       Desktop = @('WinMerge*') }
+    @{ Enabled = $true;  Name = 'Omnissa Horizon Client'; Id = 'Omnissa.HorizonClient'
+       Desktop = @('Omnissa Horizon Client*', 'VMware Horizon Client*', 'Horizon Client*') }
+    @{ Enabled = $true;  Name = 'Webex';                  Id = 'Cisco.Webex'
+       Desktop = @('Webex*') }
     @{ Enabled = $true;  Name = 'Python 3.14';            Id = 'Python.Python.3.14'
        # 全ユーザー向け + PATH 追加 + py ランチャー
-       Override = '/quiet InstallAllUsers=1 PrependPath=1 Include_launcher=1 InstallLauncherAllUsers=1 Include_test=0' }
+       Override = '/quiet InstallAllUsers=1 PrependPath=1 Include_launcher=1 InstallLauncherAllUsers=1 Include_test=0'
+       Desktop = @('IDLE*') }   # Python 付属のエディタ（IDLE）
 
     # ---- あると便利（不要なら $false に） ----
-    @{ Enabled = $true;  Name = '7-Zip';                  Id = '7zip.7zip' }
-    @{ Enabled = $true;  Name = 'WinSCP';                 Id = 'WinSCP.WinSCP' }
-    @{ Enabled = $true;  Name = 'Wireshark';              Id = 'WiresharkFoundation.Wireshark' }   # Npcap は別途手動インストール
-    @{ Enabled = $false; Name = 'PuTTY';                  Id = 'PuTTY.PuTTY' }
-    @{ Enabled = $false; Name = 'Nmap';                   Id = 'Insecure.Nmap' }
-    @{ Enabled = $false; Name = 'iPerf3';                 Id = 'ar51an.iPerf3' }
-    @{ Enabled = $false; Name = 'Visual Studio Code';     Id = 'Microsoft.VisualStudioCode' }
-    @{ Enabled = $false; Name = 'Git';                    Id = 'Git.Git' }
+    @{ Enabled = $true;  Name = '7-Zip';                  Id = '7zip.7zip'
+       Desktop = @('7-Zip File Manager*', '7-Zip*') }
+    @{ Enabled = $true;  Name = 'WinSCP';                 Id = 'WinSCP.WinSCP'
+       Desktop = @('WinSCP*') }
+    @{ Enabled = $true;  Name = 'Wireshark';              Id = 'WiresharkFoundation.Wireshark'   # Npcap は別途手動インストール
+       Desktop = @('Wireshark*') }
+    @{ Enabled = $false; Name = 'PuTTY';                  Id = 'PuTTY.PuTTY'
+       Desktop = @('PuTTY*') }
+    @{ Enabled = $false; Name = 'Nmap';                   Id = 'Insecure.Nmap'
+       Desktop = @('Nmap - Zenmap*', 'Zenmap*') }
+    @{ Enabled = $false; Name = 'iPerf3';                 Id = 'ar51an.iPerf3'
+       Desktop = @() }          # コマンドラインのみ
+    @{ Enabled = $false; Name = 'Visual Studio Code';     Id = 'Microsoft.VisualStudioCode'
+       Desktop = @('Visual Studio Code*') }
+    @{ Enabled = $false; Name = 'Git';                    Id = 'Git.Git'
+       Desktop = @('Git Bash*') }
 
     # ---- スタートメニューも Windows 10/7 風にしたい場合 ----
-    @{ Enabled = $false; Name = 'Open-Shell';             Id = 'Open-Shell.Open-Shell-Menu' }
+    @{ Enabled = $false; Name = 'Open-Shell';             Id = 'Open-Shell.Open-Shell-Menu'
+       Desktop = @() }
 )
+
+# --- デスクトップのショートカット ----------------------------------------------
+#   全ユーザー共通のデスクトップ（C:\Users\Public\Desktop）に作る。既に同じものがあれば作らない。
+$DesktopShortcuts = $true
 
 # --- winget に無いソフト（installers フォルダに置いたファイルを使う） ---------
 #   Patterns に一致する zip / exe を installers フォルダから探す。
-#   zip → Dest に展開してスタートメニューにショートカット作成
+#   zip → Dest に展開してスタートメニュー（とデスクトップ）にショートカット作成
 #   exe → インストーラーとして起動（画面の指示に従って操作）
 $InstallerDir = Join-Path $PSScriptRoot 'installers'
 $ToolsRoot    = 'C:\Tools'
@@ -112,7 +137,7 @@ $PythonPackages = @(
 $UI = @{
     TaskbarLeft          = $true   # タスクバーのアイコンを左寄せ
     SearchboxMode        = 1       # 検索: 0=非表示 1=アイコン 2=検索ボックス(Win10風) 3=アイコン+ラベル
-    TaskbarCombine       = 2       # ボタン結合: 0=常に結合 1=いっぱいの時 2=結合しない(ラベル表示)
+    TaskbarCombine       = 0       # ボタン結合: 0=常に結合(アイコンのみ) 1=いっぱいの時 2=結合しない(アプリ名も表示)
     HideTaskView         = $true   # タスクビューボタン非表示
     HideWidgets          = $true   # ウィジェット非表示（ポリシーで無効化）
     HideChatCopilot      = $true   # チャット / Copilot ボタン非表示
@@ -192,6 +217,26 @@ function New-Shortcut([string]$LinkPath, [string]$Target) {
     $lnk.TargetPath = $Target
     $lnk.WorkingDirectory = Split-Path $Target
     $lnk.Save()
+}
+function Get-DesktopLinkIndex([string[]]$Dirs) {
+    # デスクトップにある .lnk の名前とリンク先を集める（重複作成の防止用）
+    $ws = New-Object -ComObject WScript.Shell
+    $names = @{}; $targets = @{}
+    foreach ($d in $Dirs | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique) {
+        foreach ($l in Get-ChildItem -Path $d -Filter '*.lnk' -File -ErrorAction SilentlyContinue) {
+            $names[$l.BaseName.ToLower()] = $true
+            try {
+                $t = $ws.CreateShortcut($l.FullName).TargetPath
+                if ($t) { $targets[$t.ToLower()] = $true }
+            } catch { }
+        }
+    }
+    return @{ Names = $names; Targets = $targets }
+}
+function Test-DesktopLinkExists($Index, [string]$Name, [string]$Target) {
+    if ($Index.Names.ContainsKey($Name.ToLower())) { return $true }
+    if ($Target -and $Index.Targets.ContainsKey($Target.ToLower())) { return $true }
+    return $false
 }
 function Expand-ZipFile([string]$ZipPath, [string]$Dest) {
     # PS 5.1 の Expand-Archive は Shift_JIS のファイル名が化けるため、.NET で cp932 を指定して展開する
@@ -360,7 +405,8 @@ if (-not $script:IsAdmin) {
         Write-Section '管理者権限で残りの処理を実行します（UAC で「はい」を選んでください）'
         $resultFile = Join-Path (Get-UncPath $logDir) ("result_{0:yyyyMMdd_HHmmss}.json" -f (Get-Date))
         $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Get-UncPath $PSCommandPath)`"",
-                     '-Elevated', '-NoPause', '-ResultPath', "`"$resultFile`"")
+                     '-Elevated', '-NoPause', '-ResultPath', "`"$resultFile`"",
+                     '-UserDesktop', "`"$([Environment]::GetFolderPath('Desktop'))`"")
         foreach ($k in 'SkipApps', 'SkipUI', 'SkipSystem') {
             if ($PSBoundParameters.ContainsKey($k)) { $argList += "-$k" }
         }
@@ -462,6 +508,7 @@ if (-not $SkipApps) {
 
     # ---- winget に無いソフト ----
     Write-Section '2-2. ソフトのインストール (installers フォルダ)'
+    $script:LocalExe = @{}   # 展開できたソフトの exe（デスクトップのショートカット用）
     if (Test-Path $InstallerDir) {
         Get-ChildItem $InstallerDir -File | Unblock-File   # ダウンロードしたファイルのブロック解除
     }
@@ -495,6 +542,7 @@ if (-not $SkipApps) {
                         New-Shortcut (Join-Path ([Environment]::GetFolderPath('CommonStartup')) "$($app.Name).lnk") $exePath.FullName
                     }
                     Add-Result 'アプリ' $app.Name 'OK' "$($exePath.FullName)"
+                    $script:LocalExe[$app.Name] = $exePath.FullName
                 } else {
                     Add-Result 'アプリ' $app.Name 'WARN' "$($app.Dest) に展開したが $($app.Exe) が見つからない"
                 }
@@ -508,10 +556,69 @@ if (-not $SkipApps) {
         }
     }
 
+    # ---- デスクトップのショートカット ----
+    if ($DesktopShortcuts) {
+        Write-Section '2-3. デスクトップにショートカットを作成'
+        $publicDesktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
+        $index = Get-DesktopLinkIndex @($publicDesktop, [Environment]::GetFolderPath('Desktop'), $UserDesktop)
+
+        # スタートメニュー（全ユーザー共通 + 各ユーザー）のショートカットを一覧にする
+        $smRoots = @(Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs') +
+                   @(Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue |
+                     ForEach-Object { Join-Path $_.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs' })
+        $exclude = 'uninstall|アンインストール|read ?me|help|ヘルプ|manual|マニュアル|document|ドキュメント|website|web site|license|changelog|release note|reset|module docs'
+        $startLinks = @($smRoots | Where-Object { Test-Path $_ } |
+                        ForEach-Object { Get-ChildItem -Path $_ -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue } |
+                        Where-Object { $_.BaseName -notmatch $exclude })
+        $ws = New-Object -ComObject WScript.Shell
+
+        foreach ($app in $WingetApps | Where-Object { $_.Enabled -and $_.Desktop }) {
+            $link = $null
+            foreach ($pat in $app.Desktop) {
+                # 一致したものの中で名前が一番短いもの（「～ 設定」などの付属品より本体を選ぶ）
+                $link = $startLinks | Where-Object { $_.Name -like "$pat.lnk" -or $_.BaseName -like $pat } |
+                        Sort-Object { $_.BaseName.Length } | Select-Object -First 1
+                if ($link) { break }
+            }
+            if (-not $link) {
+                Add-Result 'デスクトップ' $app.Name 'WARN' 'スタートメニューにショートカットが見つからない'
+                continue
+            }
+            $target = $null
+            try { $target = $ws.CreateShortcut($link.FullName).TargetPath } catch { }
+            if (Test-DesktopLinkExists $index $link.BaseName $target) {
+                Add-Result 'デスクトップ' $app.Name 'SKIP' '作成済み'
+                continue
+            }
+            try {
+                Copy-Item -Path $link.FullName -Destination (Join-Path $publicDesktop $link.Name) -Force
+                $index.Names[$link.BaseName.ToLower()] = $true
+                if ($target) { $index.Targets[$target.ToLower()] = $true }
+                Add-Result 'デスクトップ' $app.Name 'OK' $link.BaseName
+            } catch {
+                Add-Result 'デスクトップ' $app.Name 'NG' $_.Exception.Message
+            }
+        }
+
+        foreach ($name in $script:LocalExe.Keys) {
+            $exe = $script:LocalExe[$name]
+            if (Test-DesktopLinkExists $index $name $exe) {
+                Add-Result 'デスクトップ' $name 'SKIP' '作成済み'
+                continue
+            }
+            try {
+                New-Shortcut (Join-Path $publicDesktop "$name.lnk") $exe
+                Add-Result 'デスクトップ' $name 'OK'
+            } catch {
+                Add-Result 'デスクトップ' $name 'NG' $_.Exception.Message
+            }
+        }
+    }
+
     # ---- Python パッケージ ----
     $pyApp = $WingetApps | Where-Object { $_.Enabled -and $_.Id -like 'Python.Python.3.*' } | Select-Object -First 1
     if ($pyApp -and $PythonPackages.Count -gt 0) {
-        Write-Section '2-3. Python パッケージ'
+        Write-Section '2-4. Python パッケージ'
         Update-SessionPath
         $pyVer = $pyApp.Id -replace '^Python\.Python\.', ''                       # 例: 3.14
         $pyExe = Join-Path $env:ProgramFiles ("Python{0}\python.exe" -f ($pyVer -replace '\.', ''))

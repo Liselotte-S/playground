@@ -14,9 +14,10 @@
 何度実行しても大丈夫です（インストール済みのものはスキップします）。
 
 ## やること
-- **UI を Windows 10 風に**：タスクバーを左寄せ・結合しない、不要なボタンを非表示、右クリックメニューを従来版に、エクスプローラーを「PC」で開く、拡張子と隠しファイルを表示 など
-- **ソフト（winget）**：サクラエディタ、Tera Term 5、WinMerge、Horizon Client、Python 3.14、7-Zip、WinSCP、Wireshark
+- **UI を Windows 10 風に**：タスクバーを左寄せ・アイコンのみ、不要なボタンを非表示、右クリックメニューを従来版に、エクスプローラーを「PC」で開く、拡張子と隠しファイルを表示 など
+- **ソフト（winget）**：サクラエディタ、Tera Term 5、WinMerge、Horizon Client、Webex、Python 3.14、7-Zip、WinSCP、Wireshark
 - **WinShot / ExPing**：`installers\` の zip を `C:\Tools` に展開し、スタートメニューに登録
+- **デスクトップ**：上記ソフトのショートカットを全ユーザー共通のデスクトップに作成
 - **Python ライブラリ**：netmiko、paramiko、pyserial、textfsm など
 - **Windows**：Telnet / TFTP クライアントを有効化、高速スタートアップ無効、AC 電源時はスリープしない
 
@@ -24,6 +25,7 @@
 
 ## 特に見てほしいところ
 - winget で各ソフトが入るか（特に Horizon Client と Python）
+- 各ソフトのショートカットがデスクトップにできるか（スタートメニューのショートカット名から探しているため、名前が違うと WARN になる → 設定の `Desktop` を直す）
 - 社内のプロキシ環境で、winget と pip がネットにつながるか
 - サインインし直した後に、UI の設定が反映されているか
 

@@ -22,7 +22,7 @@ Setup.bat -SkipSystem    # Windows 機能・電源設定をしない
 ### UI を Windows 10 風に
 | 項目 | 内容 |
 |---|---|
-| タスクバー | 左寄せ / 結合しない（ラベル表示） / 検索はアイコン / タスクビュー・ウィジェット・チャット・Copilot 非表示 / 時計に秒表示 |
+| タスクバー | 左寄せ / アイコンのみ（常に結合・アプリ名は出さない） / 検索はアイコン / タスクビュー・ウィジェット・チャット・Copilot 非表示 / 時計に秒表示 |
 | 右クリック | 従来のメニュー（「その他のオプションを表示」なし） |
 | エクスプローラー | 「PC」で開く / 拡張子・隠しファイル表示 / コンパクト表示 / ギャラリー非表示 |
 | スタート | Web(Bing)検索なし / おすすめのヒント非表示 |
@@ -35,10 +35,14 @@ Setup.bat -SkipSystem    # Windows 機能・電源設定をしない
 | Tera Term 5 | winget `TeraTermProject.teraterm5` |
 | WinMerge | winget `WinMerge.WinMerge` |
 | Omnissa Horizon Client（旧 VMware Horizon） | winget `Omnissa.HorizonClient` |
+| Webex | winget `Cisco.Webex` |
 | Python 3.14（全ユーザー・PATH 追加） | winget `Python.Python.3.14` |
 | 7-Zip / WinSCP / Wireshark | winget（既定で ON） |
 | PuTTY / Nmap / iPerf3 / VS Code / Git / Open-Shell | winget（既定で OFF） |
 | WinShot / ExPing | `installers\` の zip を `C:\Tools\` に展開し、スタートメニューに登録（WinShot は全ユーザー共通のスタートアップにも登録） |
+
+各ソフトのショートカットを全ユーザー共通のデスクトップ（`C:\Users\Public\Desktop`）に作成します（既にあれば作りません）。
+Python は付属エディタの IDLE のショートカットを作ります。
 
 Python パッケージ：netmiko, paramiko, pyserial, textfsm, ntc-templates, ttp, jinja2, netaddr, pyyaml, openpyxl, requests
 
